@@ -8,8 +8,7 @@ import queue
 import math
 import traceback
 import sys
-import tkinter as tk
-from tkinter import scrolledtext, font
+# tkinter 관련 import 모두 제거
 from datetime import datetime, timedelta
 import pytz
 import yfinance as yf
@@ -48,9 +47,9 @@ log_queue = queue.Queue()
 # [2. 유틸리티]
 # ==========================================
 def print_log(msg):
+    # Termux에서는 print로 직접 출력
     print(msg) 
     logging.info(msg)
-    log_queue.put(msg) 
 
 def send_discord(msg):
     try:
@@ -279,11 +278,10 @@ class KisUS:
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
         tr_id = "TTTS3007R" if "REAL" in MODE else "VTTS3007R"
         headers = self.get_header(tr_id) 
-        # [수정] NAS -> NASD (주문가능금액 조회 시 거래소코드)
         params = {
             "CANO": self.cfg['CANO'], 
             "ACNT_PRDT_CD": self.cfg['ACNT_PRDT_CD'],
-            "OVRS_EXCG_CD": "NASD", 
+            "OVRS_EXCG_CD": "NASD",  # 나스닥 기준
             "OVRS_ORD_UNPR": "0", 
             "ITEM_CD": "TQQQ", 
             "TR_CRCY_CD": "USD"
@@ -434,70 +432,55 @@ def calculate_indicators(hist):
     }
 
 # ==========================================
-# [7. GUI 및 명령어]
+# [7. Termux App (CLI)]
 # ==========================================
-class QuantApp:
-    def __init__(self, root, kis):
-        self.root = root
+class TermuxApp:
+    def __init__(self, kis):
         self.kis = kis
-        self.root.title(f"US Stock Bot ({MODE})")
-        self.root.geometry("1000x600")
-        self.font_style = font.Font(family="Malgun Gothic", size=10)
+        # 입력 스레드 시작
+        input_t = threading.Thread(target=self.input_loop)
+        input_t.daemon = True
+        input_t.start()
         
-        input_frame = tk.Frame(root)
-        input_frame.pack(side=tk.BOTTOM, fill='x', padx=10, pady=10)
-        
-        tk.Label(input_frame, text="명령어:", font=self.font_style).pack(side='left')
-        self.entry = tk.Entry(input_frame, font=self.font_style)
-        self.entry.pack(side='left', fill='x', expand=True, padx=5)
-        self.entry.bind("<Return>", self.process_command)
-        
-        send_btn = tk.Button(input_frame, text="전송", command=self.process_command, font=self.font_style)
-        send_btn.pack(side='right')
-        
-        tk.Label(input_frame, text="(예: '현재', '검토', '취소', '테스트매수 TQQQ', '테스트매도 SOXL')", font=self.font_style).pack(side='bottom')
+        # [초기 실행] 0.5초 후 상태 출력
+        time.sleep(0.5)
+        self.process_command("현재")
 
-        self.log_area = scrolledtext.ScrolledText(root, state='disabled', height=20, font=self.font_style)
-        self.log_area.pack(side=tk.TOP, fill='both', expand=True, padx=10, pady=5)
-        self.check_queue()
+    def input_loop(self):
+        while True:
+            try:
+                cmd = input() 
+                if cmd.strip():
+                    self.process_command(cmd)
+            except EOFError:
+                break
+            except Exception as e:
+                print(f"입력 오류: {e}")
 
-        # [수정 2] 최초 실행 시 '현재' 상태 자동 출력 (0.5초 후 실행)
-        self.root.after(500, lambda: threading.Thread(target=self.cmd_show_status).start())
-
-    def check_queue(self):
-        while not log_queue.empty():
-            msg = log_queue.get()
-            self.log_area.configure(state='normal')
-            self.log_area.insert(tk.END, msg + "\n")
-            self.log_area.see(tk.END)
-            self.log_area.configure(state='disabled')
-        self.root.after(100, self.check_queue)
-
-    def process_command(self, event=None):
-        cmd = self.entry.get().strip()
-        self.entry.delete(0, tk.END)
-        if not cmd: return
+    def process_command(self, cmd):
+        cmd = cmd.strip()
         print_log(f"\n[사용자 입력] >> {cmd}")
         
         if cmd == "현재":
-            threading.Thread(target=self.cmd_show_status).start()
+            self.cmd_show_status()
         elif cmd == "검토":
-            threading.Thread(target=self.cmd_review).start()
+            self.cmd_review()
         elif cmd == "취소":
-            threading.Thread(target=self.cmd_cancel_all).start()
+            self.cmd_cancel_all()
         elif cmd.startswith("강제매도"):
             parts = cmd.split()
-            if len(parts) == 2: threading.Thread(target=self.cmd_manual_sell, args=(parts[1],)).start()
+            if len(parts) == 2: self.cmd_manual_sell(parts[1])
         elif cmd.startswith("강제매수"):
             parts = cmd.split()
-            if len(parts) == 2: threading.Thread(target=self.cmd_manual_buy, args=(parts[1],)).start()
+            if len(parts) == 2: self.cmd_manual_buy(parts[1])
         elif cmd.startswith("테스트매도"):
             parts = cmd.split()
-            if len(parts) == 2: threading.Thread(target=self.cmd_test_order, args=(parts[1], "SELL")).start()
+            if len(parts) == 2: self.cmd_test_order(parts[1], "SELL")
         elif cmd.startswith("테스트매수"):
             parts = cmd.split()
-            if len(parts) == 2: threading.Thread(target=self.cmd_test_order, args=(parts[1], "BUY")).start()
-        else: print_log("❌ 알 수 없는 명령어입니다.")
+            if len(parts) == 2: self.cmd_test_order(parts[1], "BUY")
+        else: 
+            print_log("❌ 알 수 없는 명령어입니다. (현재, 검토, 취소, 테스트매수/매도 [종목], 강제매수/매도 [종목])")
 
     def cmd_cancel_all(self):
         print_log("🧹 모든 미체결 주문 취소를 시도합니다...")
@@ -670,22 +653,28 @@ class QuantApp:
         if symbol not in holdings: return print_log("❌ 미보유 종목")
         curr = DataProvider.get_current_price(symbol)
         if not curr: return
-        self.kis.cancel_all_orders(symbol, "NAS")
-        if self.kis.send_order(symbol, "NAS", holdings[symbol]['qty'], round(curr * 0.95, 2), "SELL", "00"):
-            status_mgr.set_ignore_sync(symbol, 3600)
+        
+        target = next((t for t in TARGETS if t['symbol'] == symbol), None)
+        if target:
+            self.kis.cancel_all_orders(symbol, target['exch'])
+            if self.kis.send_order(symbol, target['exch'], holdings[symbol]['qty'], round(curr * 0.95, 2), "SELL", "00"):
+                status_mgr.set_ignore_sync(symbol, 3600)
 
     def cmd_manual_buy(self, symbol):
         print_log(f"⚠️ [{symbol}] 강제 매수 요청 (1주)...")
         curr = DataProvider.get_current_price(symbol)
         if not curr: return
-        self.kis.send_order(symbol, "NAS", 1, round(curr * 1.05, 2), "BUY", "00")
+
+        target = next((t for t in TARGETS if t['symbol'] == symbol), None)
+        if target:
+            self.kis.send_order(symbol, target['exch'], 1, round(curr * 1.05, 2), "BUY", "00")
 
 # ==========================================
 # [8. 전략 스레드]
 # ==========================================
 def strategy_thread(kis):
     ny_tz = pytz.timezone('America/New_York')
-    print_log("🤖 해외주식 봇 (PC/Equity Model + ADX + Reclaim) 가동")
+    print_log("🤖 미국치킨 V1.0 (Termux) 가동")
     
     prev_holdings_snapshot = {}
     last_wait_log = 0 
@@ -892,11 +881,12 @@ def strategy_thread(kis):
             time.sleep(60)
 
 if __name__ == "__main__":
-    if sys.platform.startswith('win'): pass
     kis = KisUS()
-    root = tk.Tk()
-    app = QuantApp(root, kis)
+    # GUI 제거: TermuxApp이 CLI 역할
+    app = TermuxApp(kis)
     t = threading.Thread(target=strategy_thread, args=(kis,))
     t.daemon = True
     t.start()
-    root.mainloop()
+    # 메인 스레드 유지
+    while True:
+        time.sleep(1)
